@@ -16,10 +16,31 @@
 #     by ESPHome via LibreTiny (board "t1-2s").
 #     https://docs.libretiny.eu/boards/t1-2s/
 #   - No Tuya MCU: relays/LEDs/button are driven directly by module GPIOs.
+#
+# Persistence design:
+#   - The four switches do NOT persist individually (restore_mode: DISABLED).
+#     Every switch change updates one bitmask global (outlets_state,
+#     bit0=pair1 .. bit3=usb), the only persisted record.
+#   - On BK7238/LibreTiny, preference saves are queued in RAM and coalesced
+#     per key; the built-in syncer below flushes them to flash once per
+#     second, so bursts cost a single append. Trade-off: a power cut loses
+#     up to ~1s of changes.
+#   - The red LED is not persisted at all (restore_mode: ALWAYS_OFF).
 
 esphome:
   name: power-strip-2
   friendly_name: Power Strip 2
+  on_boot:
+    # After the switches are set up, before Wi-Fi: re-apply the saved
+    # outlet bitmask. (The on_turn_on hooks just re-set the same bits,
+    # so this causes no flash write.)
+    priority: 600
+    then:
+      - lambda: |-
+          if (id(outlets_state) & 1) id(pair_1).turn_on();
+          if (id(outlets_state) & 2) id(pair_2).turn_on();
+          if (id(outlets_state) & 4) id(pair_3).turn_on();
+          if (id(outlets_state) & 8) id(usb_ports).turn_on();
 
 bk72xx:
   board: t1-2s
@@ -27,6 +48,18 @@ bk72xx:
     # "latest" guarantees a LibreTiny version that knows the t1-2s board / BK7238.
     # Once your ESPHome release is new enough you can drop this line.
     version: latest
+
+# Flush queued preference saves to flash once per second (default is 60s).
+preferences:
+  flash_write_interval: 1s
+
+globals:
+  # Outlet state bitmask (bit0=pair1, bit1=pair2, bit2=pair3, bit3=usb).
+  # The ONLY persisted record. Defaults to 0 = everything off on first boot.
+  - id: outlets_state
+    type: int
+    restore_value: yes
+    initial_value: "0"
 
 logger:
 
@@ -48,33 +81,72 @@ wifi:
 
 captive_portal:
 
-# Red LED (P10, active-low): slow blink while connecting, solid when OK.
+# Red LED (P10, active-low) is shared by two owners:
+#   - status_led: fast blink on error, slow blink while connecting, off when OK
+#   - "Red LED" light below: controllable from Home Assistant
+# While the node is healthy the status LED hands the pin over (it writes once
+# and stops), so the light wins. During a warning/error the status blinking
+# takes over the pin again.
 status_led:
   pin:
     number: P10
     inverted: true
+    allow_other_uses: true
+
+output:
+  - platform: gpio
+    id: red_led_out
+    pin:
+      number: P10
+      inverted: true
+      allow_other_uses: true
+
+light:
+  - platform: binary
+    id: red_led
+    name: "Red LED"
+    output: red_led_out
+    # ALWAYS_OFF creates no flash preference record: LED changes are
+    # never written to flash.
+    restore_mode: ALWAYS_OFF
 
 switch:
   - platform: gpio
     id: pair_1
     pin: P26
     name: "Socket Pair 1"
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: DISABLED
+    on_turn_on:
+      - lambda: "id(outlets_state) |= 1;"
+    on_turn_off:
+      - lambda: "id(outlets_state) &= ~1;"
   - platform: gpio
     id: pair_2
     pin: P6
     name: "Socket Pair 2"
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: DISABLED
+    on_turn_on:
+      - lambda: "id(outlets_state) |= 2;"
+    on_turn_off:
+      - lambda: "id(outlets_state) &= ~2;"
   - platform: gpio
     id: pair_3
     pin: P8
     name: "Socket Pair 3"
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: DISABLED
+    on_turn_on:
+      - lambda: "id(outlets_state) |= 4;"
+    on_turn_off:
+      - lambda: "id(outlets_state) &= ~4;"
   - platform: gpio
     id: usb_ports
     pin: P24
     name: "USB Ports"
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: DISABLED
+    on_turn_on:
+      - lambda: "id(outlets_state) |= 8;"
+    on_turn_off:
+      - lambda: "id(outlets_state) &= ~8;"
 
 binary_sensor:
   - platform: gpio
