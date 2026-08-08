@@ -1,0 +1,105 @@
+# ESPHome firmware for the Tuya "WIFI Smart Power Strip Universal" (T1-2S-NL)
+# 6 AC sockets (wired as 3 relay-switched pairs) + 4 USB ports (one group)
+# + 1 master button + red/blue LEDs.
+#
+# Pin map (verified by GPIO probing on this unit):
+#   P26 - socket pair 1 relay (active-high), pair closest to button/USB end
+#   P6  - socket pair 2 relay (active-high)
+#   P8  - socket pair 3 relay (active-high)
+#   P24 - USB ports relay (active-high); the blue LED is wired to the same
+#         GPIO, so it follows the USB switch state
+#   P10 - red LED (active-low), used as status LED
+#   P11 - master button (active-low, needs the internal pull-up)
+#
+# Hardware notes:
+#   - T1-2S-NL = Tuya Wi-Fi module with a Beken BK7238, 2 MB flash, supported
+#     by ESPHome via LibreTiny (board "t1-2s").
+#     https://docs.libretiny.eu/boards/t1-2s/
+#   - No Tuya MCU: relays/LEDs/button are driven directly by module GPIOs.
+
+esphome:
+  name: power-strip-2
+  friendly_name: Power Strip 2
+
+bk72xx:
+  board: t1-2s
+  framework:
+    # "latest" guarantees a LibreTiny version that knows the t1-2s board / BK7238.
+    # Once your ESPHome release is new enough you can drop this line.
+    version: latest
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Fallback hotspot in case Wi-Fi connection fails
+  ap:
+    ssid: "Power-Strip-2 Fallback"
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+# Red LED (P10, active-low): slow blink while connecting, solid when OK.
+status_led:
+  pin:
+    number: P10
+    inverted: true
+
+switch:
+  - platform: gpio
+    id: pair_1
+    pin: P26
+    name: "Socket Pair 1"
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: gpio
+    id: pair_2
+    pin: P6
+    name: "Socket Pair 2"
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: gpio
+    id: pair_3
+    pin: P8
+    name: "Socket Pair 3"
+    restore_mode: RESTORE_DEFAULT_OFF
+  - platform: gpio
+    id: usb_ports
+    pin: P24
+    name: "USB Ports"
+    restore_mode: RESTORE_DEFAULT_OFF
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: P11
+      inverted: true
+      mode: INPUT_PULLUP
+    name: "Master Button"
+    # Master behaviour: if anything is on, turn everything off; otherwise
+    # turn everything on.
+    on_press:
+      - if:
+          condition:
+            or:
+              - switch.is_on: pair_1
+              - switch.is_on: pair_2
+              - switch.is_on: pair_3
+              - switch.is_on: usb_ports
+          then:
+            - switch.turn_off: pair_1
+            - switch.turn_off: pair_2
+            - switch.turn_off: pair_3
+            - switch.turn_off: usb_ports
+          else:
+            - switch.turn_on: pair_1
+            - switch.turn_on: pair_2
+            - switch.turn_on: pair_3
+            - switch.turn_on: usb_ports
